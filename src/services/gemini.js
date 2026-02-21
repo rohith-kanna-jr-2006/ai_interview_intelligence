@@ -11,7 +11,7 @@ const getAI = () => {
 export const analyzeResume = async (resumeText, jobDescription) => {
   const ai = getAI();
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-1.5-flash",
     contents: `Analyze the following resume against the job description. 
     
     Your goal is to identify specific projects mentioned in the resume and generate deep, probing questions for each.
@@ -48,15 +48,15 @@ export const analyzeResume = async (resumeText, jobDescription) => {
 };
 
 export const evaluateResponse = async (
-  question, 
-  answer, 
+  question,
+  answer,
   resumeContext,
   jobDescription,
   previousHistory
 ) => {
   const ai = getAI();
   const response = await ai.models.generateContent({
-    model: "gemini-3.1-pro-preview",
+    model: "gemini-1.5-pro",
     contents: `Evaluate the candidate's response to the interview question.
     
     Context:
@@ -108,7 +108,7 @@ export const evaluateResponse = async (
 export const generateInitialQuestion = async (resumeData, jobDescription) => {
   const ai = getAI();
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-1.5-flash",
     contents: `Based on the resume analysis and job description, generate a professional opening interview question.
     Resume Analysis: ${JSON.stringify(resumeData)}
     Job Description: ${jobDescription}`,
