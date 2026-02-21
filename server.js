@@ -54,6 +54,49 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  // --- Auth Endpoints ---
+  app.post("/api/auth/signup", async (req, res) => {
+    try {
+      const { regNo, password } = req.body;
+      const existingUser = await usersColl.findOne({ regNo: regNo.toUpperCase() });
+
+      if (existingUser) {
+        if (existingUser.password === password) {
+          return res.json({ success: true, message: 'Already registered, logged in automatically.', user: existingUser });
+        } else {
+          return res.status(401).json({ error: 'Register number already exists with a different password.' });
+        }
+      }
+
+      const user_id = 'u_' + Math.random().toString(36).substring(7);
+      const newUser = {
+        user_id,
+        ...req.body,
+        regNo: regNo.toUpperCase(),
+        created_at: new Date()
+      };
+      await usersColl.insertOne(newUser);
+
+      res.json({ success: true, message: 'Account created successfully.', user: newUser });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { regNo, password } = req.body;
+      const user = await usersColl.findOne({ regNo: regNo.toUpperCase(), password });
+      if (user) {
+        res.json({ success: true, user });
+      } else {
+        res.status(401).json({ error: 'Invalid register number or password' });
+      }
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // --- User & Resume Endpoints ---
   app.post("/api/users", async (req, res) => {
     try {

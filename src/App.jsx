@@ -13,7 +13,8 @@ import {
   Loader2,
   ArrowLeft,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  UploadCloud
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -37,7 +38,8 @@ const Button = ({
   variant = 'primary',
   className,
   disabled,
-  isLoading
+  isLoading,
+  type = 'button'
 }) => {
   const variants = {
     primary: "bg-slate-900 text-white hover:bg-slate-800",
@@ -49,6 +51,7 @@ const Button = ({
 
   return (
     <button
+      type={type}
       onClick={onClick}
       disabled={disabled || isLoading}
       className={cn(
@@ -80,8 +83,20 @@ const Badge = ({ children, variant = 'default' }) => {
 // --- Main App ---
 
 export default function App() {
-  const [view, setView] = useState('dashboard');
+  const [view, setView] = useState('login');
   const [interviews, setInterviews] = useState([]);
+  const [loginData, setLoginData] = useState({ regNo: '', password: '' });
+  const [signupData, setSignupData] = useState({
+    name: '',
+    regNo: '',
+    password: '',
+    email: '',
+    dob: '',
+    role: 'candidate',
+    gender: '',
+    education: '',
+    skills: ''
+  });
   const [activeInterview, setActiveInterview] = useState(null);
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -124,6 +139,69 @@ export default function App() {
     const res = await fetch('/api/interviews');
     const data = await res.json();
     setInterviews(data);
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loginData)
+      });
+      const data = await res.json();
+      if (data.success) {
+        setView('dashboard');
+      } else {
+        alert(data.error || "Login Failed");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error logging in");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(signupData)
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setFormData(prev => ({
+          ...prev,
+          candidate_name: data.user.name || signupData.name,
+          email: data.user.email || signupData.email,
+          password: data.user.password || signupData.password,
+          dob: data.user.dob || signupData.dob,
+          gender: data.user.gender || signupData.gender,
+          role: data.user.role || signupData.role,
+          education: data.user.education || signupData.education,
+          manual_skills: data.user.skills || signupData.skills
+        }));
+
+        if (data.message.includes('Already registered')) {
+          alert('Welcome back! ' + data.message);
+        }
+
+        setView('create');
+      } else {
+        alert(data.error || "Sign up Failed");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error creating account");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCreateInterview = async () => {
@@ -316,33 +394,227 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="h-16 border-b border-slate-200 bg-white flex items-center px-6 justify-between sticky top-0 z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center">
-            <ShieldAlert className="text-white w-6 h-6" />
+    <div className="min-h-screen flex flex-col bg-slate-50">
+      {/* Header - Only display when not in login or signup views */}
+      {view !== 'login' && view !== 'signup' && (
+        <header className="h-16 border-b border-slate-200 bg-white flex items-center px-6 justify-between sticky top-0 z-10 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center">
+              <ShieldAlert className="text-white w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="font-bold text-lg tracking-tight">InterviewIQ</h1>
+              <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Core Intelligence Engine</p>
+            </div>
           </div>
-          <div>
-            <h1 className="font-bold text-lg tracking-tight">InterviewIQ</h1>
-            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Core Intelligence Engine</p>
+
+          <div className="flex items-center gap-4">
+            <Button variant="outline" onClick={() => setView('dashboard')} className={cn(view === 'dashboard' && "bg-slate-100")}>
+              <LayoutDashboard className="w-4 h-4" />
+              <span className="hidden sm:inline">Dashboard</span>
+            </Button>
+            <Button variant="primary" onClick={() => setView('create')}>
+              <Plus className="w-4 h-4" />
+              <span className="hidden sm:inline">New Interview</span>
+            </Button>
+            <Button variant="outline" onClick={() => setView('login')} className="text-red-600 hover:bg-red-50 hover:text-red-700">
+              Logout
+            </Button>
           </div>
-        </div>
+        </header>
+      )}
 
-        <div className="flex items-center gap-4">
-          <Button variant="outline" onClick={() => setView('dashboard')} className={cn(view === 'dashboard' && "bg-slate-100")}>
-            <LayoutDashboard className="w-4 h-4" />
-            <span className="hidden sm:inline">Dashboard</span>
-          </Button>
-          <Button variant="primary" onClick={() => setView('create')}>
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">New Interview</span>
-          </Button>
-        </div>
-      </header>
-
-      <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
+      <main className={cn(
+        "flex-1 w-full",
+        (view !== 'login' && view !== 'signup') ? "p-6 max-w-7xl mx-auto" : "flex items-center justify-center p-6"
+      )}>
         <AnimatePresence mode="wait">
+          {view === 'login' && (
+            <motion.div
+              key="login"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md"
+            >
+              <Card>
+                <div className="p-8 space-y-8">
+                  <div className="text-center space-y-2">
+                    <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-xl">
+                      <ShieldAlert className="text-white w-8 h-8" />
+                    </div>
+                    <h2 className="text-3xl font-bold tracking-tight">Welcome Back</h2>
+                    <p className="text-slate-500">Sign in to your InterviewIQ account</p>
+                  </div>
+
+                  <form className="space-y-4" onSubmit={handleLogin}>
+                    <div className="space-y-2">
+                      <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Register Number</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. REG12345"
+                        required
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all uppercase"
+                        value={loginData.regNo}
+                        onChange={e => setLoginData({ ...loginData, regNo: e.target.value.toUpperCase() })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Password</label>
+                      <input
+                        type="password"
+                        placeholder="••••••••"
+                        required
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                        value={loginData.password}
+                        onChange={e => setLoginData({ ...loginData, password: e.target.value })}
+                      />
+                    </div>
+                    <Button variant="primary" className="w-full py-3 mt-4" type="submit">
+                      Sign In
+                    </Button>
+                  </form>
+                  <p className="text-center text-sm text-slate-500 font-medium pt-2">
+                    Don't have an account? <span className="text-brand-600 hover:text-brand-700 cursor-pointer" onClick={() => setView('signup')}>Sign up</span>
+                  </p>
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
+          {view === 'signup' && (
+            <motion.div
+              key="signup"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-2xl"
+            >
+              <Card>
+                <div className="p-8 space-y-8">
+                  <div className="text-center space-y-2">
+                    <h2 className="text-3xl font-bold tracking-tight">Create Account</h2>
+                    <p className="text-slate-500">Join InterviewIQ today</p>
+                  </div>
+
+                  <form className="space-y-6" onSubmit={handleSignup}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Full Name</label>
+                        <input
+                          type="text"
+                          required
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none"
+                          value={signupData.name}
+                          onChange={e => setSignupData({ ...signupData, name: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Register Number</label>
+                        <input
+                          type="text"
+                          required
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none uppercase"
+                          value={signupData.regNo}
+                          onChange={e => setSignupData({ ...signupData, regNo: e.target.value.toUpperCase() })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Email Address</label>
+                        <input
+                          type="email"
+                          required
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none"
+                          value={signupData.email}
+                          onChange={e => setSignupData({ ...signupData, email: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Password</label>
+                        <input
+                          type="password"
+                          required
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none"
+                          value={signupData.password}
+                          onChange={e => setSignupData({ ...signupData, password: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Date of Birth</label>
+                        <input
+                          type="date"
+                          required
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={signupData.dob}
+                          onChange={e => setSignupData({ ...signupData, dob: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Gender</label>
+                        <select
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none bg-white"
+                          value={signupData.gender}
+                          onChange={e => setSignupData({ ...signupData, gender: e.target.value })}
+                        >
+                          <option value="">Select</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Role</label>
+                        <select
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none bg-white"
+                          value={signupData.role}
+                          onChange={e => setSignupData({ ...signupData, role: e.target.value })}
+                        >
+                          <option value="candidate">Candidate</option>
+                          <option value="recruiter">Recruiter</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Education Details</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. B.Tech Computer Science"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none"
+                          value={signupData.education}
+                          onChange={e => setSignupData({ ...signupData, education: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Skills (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. React, Node.js, Python"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 outline-none"
+                          value={signupData.skills}
+                          onChange={e => setSignupData({ ...signupData, skills: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                    <Button variant="primary" className="w-full py-3" type="submit">
+                      Create Account
+                    </Button>
+                  </form>
+                  <p className="text-center text-sm text-slate-500 font-medium">
+                    Already have an account? <span className="text-brand-600 hover:text-brand-700 cursor-pointer" onClick={() => setView('login')}>Sign in</span>
+                  </p>
+                </div>
+              </Card>
+            </motion.div>
+          )}
           {view === 'dashboard' && (
             <motion.div
               key="dashboard"
@@ -577,9 +849,29 @@ export default function App() {
                     </div>
 
                     <div className="space-y-2">
-                      <label className="text-sm font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-                        <FileText className="w-4 h-4" /> Resume Content (Text Extraction)
-                      </label>
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
+                          <FileText className="w-4 h-4" /> Resume Content (Text Extraction)
+                        </label>
+                        <label className="cursor-pointer flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-brand-600 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg transition-colors">
+                          <UploadCloud className="w-4 h-4" /> Import .txt
+                          <input
+                            type="file"
+                            accept=".txt"
+                            className="hidden"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                const reader = new FileReader();
+                                reader.onload = (event) => {
+                                  setFormData(prev => ({ ...prev, resume_text: event.target.result }));
+                                };
+                                reader.readAsText(file);
+                              }
+                            }}
+                          />
+                        </label>
+                      </div>
                       <textarea
                         rows={4}
                         placeholder="Paste resume text here..."
