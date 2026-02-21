@@ -166,11 +166,44 @@ async function startServer() {
   const resumesColl = db?.collection("resumes");
   const transcriptsColl = db?.collection("transcripts");
 
-  // API Routes
+  // --- User & Resume Endpoints ---
+  app.post("/api/users", async (req, res) => {
+    try {
+      const { user_id, name, email, phone, role, password_hash } = req.body;
+      if (!db_sqlite) throw new Error("SQLite not connected");
+      db_sqlite.prepare(
+        "INSERT INTO users (user_id, name, email, phone, role, password_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(user_id, name, email, phone, role, password_hash);
+      res.json({ success: true, user_id });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/resumes", async (req, res) => {
+    try {
+      const { resume_id, user_id, resume_text, extracted_skills, experience_years, education } = req.body;
+      if (!db_sqlite) throw new Error("SQLite not connected");
+      db_sqlite.prepare(
+        "INSERT INTO resumes (resume_id, user_id, resume_text, extracted_skills, experience_years, education) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(resume_id, user_id, resume_text, extracted_skills, experience_years, education);
+      res.json({ success: true, resume_id });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- Interview Endpoints ---
   app.get("/api/interviews", async (req, res) => {
     try {
       if (!db_sqlite) return res.status(500).json({ error: "SQLite not connected" });
-      const rows = db_sqlite.prepare("SELECT * FROM interviews ORDER BY created_at DESC").all();
+      // JOIN with users to get candidate name if needed, or just return interviews
+      const rows = db_sqlite.prepare(`
+        SELECT i.*, u.name as candidate_name 
+        FROM interviews i 
+        LEFT JOIN users u ON i.user_id = u.user_id 
+        ORDER BY i.created_at DESC
+      `).all();
       res.json(rows);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -179,18 +212,34 @@ async function startServer() {
 
   app.post("/api/interviews", async (req, res) => {
     try {
-      const { id, candidate_name, resume_text, job_description, mode, analysis } = req.body;
+      const {
+        interview_id,
+        user_id,
+        job_role,
+        job_description,
+        interview_mode,
+        interview_language,
+        interview_duration,
+        interview_level
+      } = req.body;
 
-      // Save structured data to SQLite
       if (!db_sqlite) throw new Error("SQLite not connected");
-      db_sqlite.prepare(
-        "INSERT INTO interviews (id, candidate_name, job_description, mode, status) VALUES (?, ?, ?, ?, 'ongoing')"
-      ).run(id, candidate_name, job_description, mode);
+      db_sqlite.prepare(`
+        INSERT INTO interviews (
+          interview_id, user_id, job_role, job_description, 
+          interview_mode, interview_language, interview_duration, 
+          interview_level, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ongoing')
+      `).run(
+        interview_id, user_id, job_role, job_description,
+        interview_mode, interview_language, interview_duration,
+        interview_level
+      );
 
-      // Save unstructured data to MongoDB
-      if (!resumesColl || !transcriptsColl) throw new Error("MongoDB not connected");
-      await resumesColl.insertOne({ interview_id: id, resume_text, analysis });
-      await transcriptsColl.insertOne({ interview_id: id, messages: [] });
+      // Initialize transcription in MongoDB (optional but kept for heritage)
+      if (transcriptsColl) {
+        await transcriptsColl.insertOne({ interview_id, messages: [] });
+      }
 
       res.json({ success: true });
     } catch (error) {
@@ -203,19 +252,25 @@ async function startServer() {
       const { id } = req.params;
 
       if (!db_sqlite) throw new Error("SQLite not connected");
-      const interview = db_sqlite.prepare("SELECT * FROM interviews WHERE id = ?").get(id);
+      const interview = db_sqlite.prepare(`
+        SELECT i.*, u.name as candidate_name 
+        FROM interviews i 
+        LEFT JOIN users u ON i.user_id = u.user_id 
+        WHERE i.interview_id = ?
+      `).get(id);
 
       if (!interview) return res.status(404).json({ error: "Interview not found" });
 
-      // Fetch resume and transcript from MongoDB
-      if (!resumesColl || !transcriptsColl) throw new Error("MongoDB not connected");
-      const resumeDoc = await resumesColl.findOne({ interview_id: id });
-      const transcriptDoc = await transcriptsColl.findOne({ interview_id: id });
+      // Fetch resume from SQLite
+      const resume = db_sqlite.prepare("SELECT * FROM resumes WHERE user_id = ? ORDER BY upload_date DESC LIMIT 1").get(interview.user_id);
+
+      // Fetch transcript from MongoDB
+      const transcriptDoc = transcriptsColl ? await transcriptsColl.findOne({ interview_id: id }) : null;
 
       res.json({
         ...interview,
-        resume_text: resumeDoc?.resume_text,
-        analysis: resumeDoc?.analysis,
+        resume_text: resume?.resume_text,
+        extracted_skills: resume?.extracted_skills,
         messages: transcriptDoc?.messages || []
       });
     } catch (error) {
@@ -226,29 +281,69 @@ async function startServer() {
   app.post("/api/interviews/:id/messages", async (req, res) => {
     try {
       const { id } = req.params;
-      const { role, content, evaluation } = req.body;
+      const { role, content, evaluation, question_id, response_id } = req.body;
 
-      if (!transcriptsColl) throw new Error("MongoDB not connected");
+      if (!db_sqlite) throw new Error("SQLite not connected");
 
-      const newMessage = {
-        role,
-        content,
-        evaluation,
-        created_at: new Date()
-      };
-
-      await transcriptsColl.updateOne(
-        { interview_id: id },
-        { $push: { messages: newMessage } }
-      );
-
-      // If there are red flags, log them to SQLite (structured fraud logs)
-      if (evaluation?.red_flags?.length > 0 && db_sqlite) {
-        const stmt = db_sqlite.prepare(
-          "INSERT INTO fraud_logs (interview_id, flag_type, description) VALUES (?, ?, ?)"
+      // 1. Save message to transcription (MongoDB)
+      if (transcriptsColl) {
+        const newMessage = {
+          role,
+          content,
+          evaluation,
+          created_at: new Date()
+        };
+        await transcriptsColl.updateOne(
+          { interview_id: id },
+          { $push: { messages: newMessage } }
         );
-        for (const flag of evaluation.red_flags) {
-          stmt.run(id, "Potential Fraud", flag);
+      }
+
+      // 2. If it's a question from the interviewer, save to questions table
+      if (role === 'interviewer' && question_id) {
+        db_sqlite.prepare(`
+          INSERT INTO questions (question_id, interview_id, question_text, question_type)
+          VALUES (?, ?, ?, ?)
+        `).run(question_id, id, content, 'technical'); // Defaulting to technical for now
+      }
+
+      // 3. If it's a candidate response, save to responses and ai_analysis
+      if (role === 'candidate' && response_id && question_id) {
+        db_sqlite.prepare(`
+          INSERT INTO responses (response_id, interview_id, question_id, candidate_answer)
+          VALUES (?, ?, ?, ?)
+        `).run(response_id, id, question_id, content);
+
+        if (evaluation) {
+          const analysis_id = Math.random().toString(36).substring(7);
+          db_sqlite.prepare(`
+            INSERT INTO ai_analysis (
+              analysis_id, response_id, relevance_score, 
+              confidence_score, sentiment_score, emotion_detected
+            ) VALUES (?, ?, ?, ?, ?, ?)
+          `).run(
+            analysis_id,
+            response_id,
+            evaluation.scores?.relevance || 0,
+            evaluation.scores?.technical || 0, // Mapping technical score to confidence/tech
+            0.5, // Default sentiment
+            evaluation.sentiment || 'neutral'
+          );
+
+          // 4. Handle Red Flags in fraud_detection
+          if (evaluation.red_flags?.length > 0) {
+            const fraud_id = Math.random().toString(36).substring(7);
+            db_sqlite.prepare(`
+              INSERT INTO fraud_detection (
+                fraud_id, interview_id, suspicious_behavior_score, fraud_alert
+              ) VALUES (?, ?, ?, ?)
+            `).run(
+              fraud_id,
+              id,
+              evaluation.red_flags.length * 0.1, // Simple score
+              'Yes'
+            );
+          }
         }
       }
 
