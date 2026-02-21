@@ -1,0 +1,5 @@
+{
+  "name": "InterviewIQ - AI Interview Intelligence",
+  "description": "A professional AI-powered interview platform for automated screening and real-time interviewer assistance with fraud detection.",
+  "requestFramePermissions": ["microphone"]
+}
