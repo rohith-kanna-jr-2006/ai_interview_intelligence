@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  LayoutDashboard, 
-  Plus, 
-  User, 
-  FileText, 
-  Briefcase, 
-  Play, 
+import {
+  LayoutDashboard,
+  Plus,
+  User,
+  FileText,
+  Briefcase,
+  Play,
   ChevronRight,
   ShieldAlert,
   BarChart3,
@@ -23,7 +23,7 @@ import Markdown from 'react-markdown';
 // --- Components ---
 
 const Card = ({ children, className, onClick }) => (
-  <div 
+  <div
     className={cn("bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden", className)}
     onClick={onClick}
   >
@@ -31,11 +31,11 @@ const Card = ({ children, className, onClick }) => (
   </div>
 );
 
-const Button = ({ 
-  children, 
-  onClick, 
-  variant = 'primary', 
-  className, 
+const Button = ({
+  children,
+  onClick,
+  variant = 'primary',
+  className,
   disabled,
   isLoading
 }) => {
@@ -48,7 +48,7 @@ const Button = ({
   };
 
   return (
-    <button 
+    <button
       onClick={onClick}
       disabled={disabled || isLoading}
       className={cn(
@@ -86,13 +86,35 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Form State
+  // Expanded Form State matching requirements
   const [formData, setFormData] = useState({
+    // User Data
     candidate_name: '',
+    email: '',
+    phone: '',
+    password: '',
+    role: 'candidate',
+    dob: '',
+    gender: '',
+    address: '',
+    profile_photo: 'https://cdn-icons-png.flaticon.com/512/149/149071.png',
+
+    // Resume & Job Details
     resume_text: '',
+    education: '',
+    manual_skills: '',
+    job_role: '',
     job_description: '',
-    mode: 'automated'
+
+    // Interview Setup
+    interview_mode: 'AI',
+    interview_language: 'English',
+    interview_duration: 30,
+    interview_level: 'Intermediate',
+    interview_date: new Date().toISOString().slice(0, 16)
   });
+
+  const [currentQuestionId, setCurrentQuestionId] = useState(null);
 
   useEffect(() => {
     fetchInterviews();
@@ -107,29 +129,78 @@ export default function App() {
   const handleCreateInterview = async () => {
     setIsLoading(true);
     try {
-      const id = Math.random().toString(36).substring(7);
-      
-      // 1. Analyze resume first
+      const user_id = 'u_' + Math.random().toString(36).substring(7);
+      const resume_id = 'r_' + Math.random().toString(36).substring(7);
+      const interview_id = 'i_' + Math.random().toString(36).substring(7);
+
+      // 1. Create User
+      await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id,
+          name: formData.candidate_name,
+          email: formData.email,
+          phone: formData.phone,
+          password_hash: formData.password, // In a real app, hash this frontend or backend
+          role: formData.role,
+          dob: formData.dob,
+          gender: formData.gender,
+          address: formData.address,
+          profile_photo_path: formData.profile_photo
+        })
+      });
+
+      // 2. Analyze resume
       const resumeAnalysis = await analyzeResume(formData.resume_text, formData.job_description);
-      
-      // 2. Create interview with analysis
+
+      // 3. Create Resume record
+      await fetch('/api/resumes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          resume_id,
+          user_id,
+          resume_text: formData.resume_text,
+          extracted_skills: (resumeAnalysis.technical_skills.join(', ') + ', ' + formData.manual_skills).trim(', '),
+          experience_years: resumeAnalysis.experience_years,
+          education: formData.education || 'Extracted from Resume'
+        })
+      });
+
+      // 4. Create interview
       await fetch('/api/interviews', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, id, analysis: resumeAnalysis })
+        body: JSON.stringify({
+          interview_id,
+          user_id,
+          job_role: formData.job_role,
+          job_description: formData.job_description,
+          interview_mode: formData.interview_mode,
+          interview_language: formData.interview_language,
+          interview_duration: formData.interview_duration,
+          interview_level: formData.interview_level
+        })
       });
-      
-      // 3. Start the interview with an initial question
+
+      // 5. Start the interview with an initial question
       const initialQuestion = await generateInitialQuestion(resumeAnalysis, formData.job_description);
-      
-      await fetch(`/api/interviews/${id}/messages`, {
+      const question_id = 'q_' + Math.random().toString(36).substring(7);
+      setCurrentQuestionId(question_id);
+
+      await fetch(`/api/interviews/${interview_id}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'interviewer', content: initialQuestion })
+        body: JSON.stringify({
+          role: 'interviewer',
+          content: initialQuestion,
+          question_id
+        })
       });
 
       fetchInterviews();
-      handleOpenInterview(id);
+      handleOpenInterview(interview_id);
     } catch (error) {
       console.error(error);
     } finally {
@@ -150,17 +221,24 @@ export default function App() {
 
   const handleSendMessage = async (content) => {
     if (!activeInterview) return;
-    
+
     // 1. Add candidate message
-    const candidateMsg = { role: 'candidate', content, created_at: new Date().toISOString() };
+    const response_id = 'resp_' + Math.random().toString(36).substring(7);
+    const candidateMsg = {
+      role: 'candidate',
+      content,
+      created_at: new Date().toISOString(),
+      response_id,
+      question_id: currentQuestionId
+    };
     setMessages(prev => [...prev, { ...candidateMsg, id: Date.now() }]);
-    
+
     setIsLoading(true);
     try {
       // 2. Evaluate response
       const history = messages.map(m => `${m.role}: ${m.content}`).join('\n');
       const lastInterviewerMsg = [...messages].reverse().find(m => m.role === 'interviewer');
-      
+
       const evaluation = await evaluateResponse(
         lastInterviewerMsg?.content || "Tell me about yourself",
         content,
@@ -169,38 +247,67 @@ export default function App() {
         history
       );
 
-      // 3. Save candidate message with evaluation
-      await fetch(`/api/interviews/${activeInterview.id}/messages`, {
+      // 3. Save candidate message with evaluation and IDs
+      await fetch(`/api/interviews/${activeInterview.interview_id}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'candidate', content, evaluation })
+        body: JSON.stringify({
+          role: 'candidate',
+          content,
+          evaluation,
+          response_id,
+          question_id: currentQuestionId
+        })
       });
 
       // 4. Generate next question (if automated)
-      if (activeInterview.mode === 'automated') {
+      if (activeInterview.interview_mode === 'AI') {
+        const next_question_id = 'q_' + Math.random().toString(36).substring(7);
         const nextQuestion = evaluation.next_recommended_question;
-        await fetch(`/api/interviews/${activeInterview.id}/messages`, {
+
+        await fetch(`/api/interviews/${activeInterview.interview_id}/messages`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role: 'interviewer', content: nextQuestion })
+          body: JSON.stringify({
+            role: 'interviewer',
+            content: nextQuestion,
+            question_id: next_question_id
+          })
         });
-        
-        setMessages(prev => [...prev, { 
-          id: Date.now() + 1, 
-          role: 'interviewer', 
-          content: nextQuestion, 
-          created_at: new Date().toISOString() 
+
+        setCurrentQuestionId(next_question_id);
+        setMessages(prev => [...prev, {
+          id: Date.now() + 1,
+          role: 'interviewer',
+          content: nextQuestion,
+          created_at: new Date().toISOString()
         }]);
       }
 
       // Refresh messages
-      const res = await fetch(`/api/interviews/${activeInterview.id}`);
+      const res = await fetch(`/api/interviews/${activeInterview.interview_id}`);
       const data = await res.json();
       setMessages(data.messages.map((m) => ({
         ...m,
         evaluation: m.evaluation ? (typeof m.evaluation === 'string' ? JSON.parse(m.evaluation) : m.evaluation) : undefined
       })));
 
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleFinalizeInterview = async () => {
+    if (!activeInterview) return;
+    setIsLoading(true);
+    try {
+      await fetch(`/api/interviews/${activeInterview.interview_id}/finalize`, {
+        method: 'POST'
+      });
+      setView('dashboard');
+      fetchInterviews();
     } catch (error) {
       console.error(error);
     } finally {
@@ -221,7 +328,7 @@ export default function App() {
             <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">Core Intelligence Engine</p>
           </div>
         </div>
-        
+
         <div className="flex items-center gap-4">
           <Button variant="outline" onClick={() => setView('dashboard')} className={cn(view === 'dashboard' && "bg-slate-100")}>
             <LayoutDashboard className="w-4 h-4" />
@@ -237,7 +344,7 @@ export default function App() {
       <main className="flex-1 p-6 max-w-7xl mx-auto w-full">
         <AnimatePresence mode="wait">
           {view === 'dashboard' && (
-            <motion.div 
+            <motion.div
               key="dashboard"
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -263,12 +370,12 @@ export default function App() {
                           {interview.status}
                         </Badge>
                       </div>
-                      
+
                       <div>
                         <h3 className="font-bold text-xl">{interview.candidate_name}</h3>
                         <p className="text-slate-500 text-sm flex items-center gap-1">
                           <Briefcase className="w-3 h-3" />
-                          {interview.mode === 'automated' ? 'AI-Led Interview' : 'Interviewer Assistant'}
+                          {interview.job_role || 'General Role'} • {interview.interview_mode} Mode
                         </p>
                       </div>
 
@@ -283,7 +390,7 @@ export default function App() {
                     </div>
                   </Card>
                 ))}
-                
+
                 {interviews.length === 0 && (
                   <div className="col-span-full py-20 flex flex-col items-center justify-center text-center space-y-4 border-2 border-dashed border-slate-200 rounded-3xl">
                     <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
@@ -303,7 +410,7 @@ export default function App() {
           )}
 
           {view === 'create' && (
-            <motion.div 
+            <motion.div
               key="create"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -318,52 +425,167 @@ export default function App() {
                   </div>
 
                   <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Full Name</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Jane Doe"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                          value={formData.candidate_name}
+                          onChange={e => setFormData({ ...formData, candidate_name: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Email ID</label>
+                        <input
+                          type="email"
+                          placeholder="jane@example.com"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                          value={formData.email}
+                          onChange={e => setFormData({ ...formData, email: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Phone</label>
+                        <input
+                          type="text"
+                          placeholder="+1 234 567 890"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                          value={formData.phone}
+                          onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Secure Password</label>
+                        <input
+                          type="password"
+                          placeholder="••••••••"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                          value={formData.password}
+                          onChange={e => setFormData({ ...formData, password: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Date of Birth</label>
+                        <input
+                          type="date"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.dob}
+                          onChange={e => setFormData({ ...formData, dob: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Gender</label>
+                        <select
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.gender}
+                          onChange={e => setFormData({ ...formData, gender: e.target.value })}
+                        >
+                          <option value="">Select</option>
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Address</label>
+                        <input
+                          type="text"
+                          placeholder="City, Country"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.address}
+                          onChange={e => setFormData({ ...formData, address: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Education Details</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. MS in CS, Stanford"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.education}
+                          onChange={e => setFormData({ ...formData, education: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Manual Skills (Comma Separated)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. React, Node.js, AWS"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.manual_skills}
+                          onChange={e => setFormData({ ...formData, manual_skills: e.target.value })}
+                        />
+                      </div>
+                    </div>
+
                     <div className="space-y-2">
-                      <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Candidate Name</label>
-                      <input 
-                        type="text" 
-                        placeholder="e.g. Jane Doe"
-                        className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-                        value={formData.candidate_name}
-                        onChange={e => setFormData({...formData, candidate_name: e.target.value})}
+                      <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Target Jab Role</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Senior Frontend Engineer"
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                        value={formData.job_role}
+                        onChange={e => setFormData({ ...formData, job_role: e.target.value })}
                       />
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
-                      <button 
-                        onClick={() => setFormData({...formData, mode: 'automated'})}
-                        className={cn(
-                          "p-4 rounded-2xl border-2 text-left transition-all",
-                          formData.mode === 'automated' ? "border-slate-900 bg-slate-50" : "border-slate-100 hover:border-slate-200"
-                        )}
-                      >
-                        <Play className={cn("w-6 h-6 mb-2", formData.mode === 'automated' ? "text-slate-900" : "text-slate-300")} />
-                        <h4 className="font-bold">Automated</h4>
-                        <p className="text-xs text-slate-500">AI conducts the full interview autonomously.</p>
-                      </button>
-                      <button 
-                        onClick={() => setFormData({...formData, mode: 'manual'})}
-                        className={cn(
-                          "p-4 rounded-2xl border-2 text-left transition-all",
-                          formData.mode === 'manual' ? "border-slate-900 bg-slate-50" : "border-slate-100 hover:border-slate-200"
-                        )}
-                      >
-                        <User className={cn("w-6 h-6 mb-2", formData.mode === 'manual' ? "text-slate-900" : "text-slate-300")} />
-                        <h4 className="font-bold">Manual</h4>
-                        <p className="text-xs text-slate-500">AI assists you with questions and fraud alerts.</p>
-                      </button>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Mode</label>
+                        <select
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.interview_mode}
+                          onChange={e => setFormData({ ...formData, interview_mode: e.target.value })}
+                        >
+                          <option value="AI">AI Mode</option>
+                          <option value="Manual">Manual</option>
+                          <option value="Hybrid">Hybrid</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Level</label>
+                        <select
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.interview_level}
+                          onChange={e => setFormData({ ...formData, interview_level: e.target.value })}
+                        >
+                          <option value="Beginner">Beginner</option>
+                          <option value="Intermediate">Intermediate</option>
+                          <option value="Expert">Expert</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Duration (min)</label>
+                        <input
+                          type="number"
+                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
+                          value={formData.interview_duration}
+                          onChange={e => setFormData({ ...formData, interview_duration: parseInt(e.target.value) })}
+                        />
+                      </div>
                     </div>
 
                     <div className="space-y-2">
                       <label className="text-sm font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
-                        <FileText className="w-4 h-4" /> Resume Content
+                        <FileText className="w-4 h-4" /> Resume Content (Text Extraction)
                       </label>
-                      <textarea 
-                        rows={6}
+                      <textarea
+                        rows={4}
                         placeholder="Paste resume text here..."
                         className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all resize-none font-mono text-sm"
                         value={formData.resume_text}
-                        onChange={e => setFormData({...formData, resume_text: e.target.value})}
+                        onChange={e => setFormData({ ...formData, resume_text: e.target.value })}
                       />
                     </div>
 
@@ -371,21 +593,21 @@ export default function App() {
                       <label className="text-sm font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-2">
                         <Briefcase className="w-4 h-4" /> Job Description
                       </label>
-                      <textarea 
-                        rows={6}
+                      <textarea
+                        rows={4}
                         placeholder="Paste job description here..."
                         className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all resize-none font-mono text-sm"
                         value={formData.job_description}
-                        onChange={e => setFormData({...formData, job_description: e.target.value})}
+                        onChange={e => setFormData({ ...formData, job_description: e.target.value })}
                       />
                     </div>
                   </div>
 
                   <div className="flex gap-3 pt-4">
                     <Button variant="outline" className="flex-1" onClick={() => setView('dashboard')}>Cancel</Button>
-                    <Button 
-                      variant="primary" 
-                      className="flex-1" 
+                    <Button
+                      variant="primary"
+                      className="flex-1"
                       onClick={handleCreateInterview}
                       isLoading={isLoading}
                       disabled={!formData.candidate_name || !formData.resume_text || !formData.job_description}
@@ -399,7 +621,7 @@ export default function App() {
           )}
 
           {view === 'session' && activeInterview && (
-            <motion.div 
+            <motion.div
               key="session"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -417,11 +639,20 @@ export default function App() {
                       <div>
                         <h3 className="font-bold">{activeInterview.candidate_name}</h3>
                         <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">
-                          {activeInterview.mode} Mode • {messages.length} Messages
+                          {activeInterview.interview_mode} Mode • {messages.length} Messages
                         </p>
                       </div>
                     </div>
-                    <Badge variant="success">Live Session</Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={activeInterview.status === 'completed' ? 'success' : 'warning'}>
+                        {activeInterview.status === 'completed' ? 'Session Archived' : 'Live Session'}
+                      </Badge>
+                      {activeInterview.status !== 'completed' && (
+                        <Button variant="danger" className="py-1 px-3 text-xs" onClick={handleFinalizeInterview} isLoading={isLoading}>
+                          Finish Interview
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -432,8 +663,8 @@ export default function App() {
                       )}>
                         <div className={cn(
                           "p-4 rounded-2xl text-sm leading-relaxed markdown-body",
-                          msg.role === 'interviewer' 
-                            ? "bg-slate-100 text-slate-800 rounded-tl-none" 
+                          msg.role === 'interviewer'
+                            ? "bg-slate-100 text-slate-800 rounded-tl-none"
                             : "bg-slate-900 text-white rounded-tr-none"
                         )}>
                           <Markdown>{msg.content}</Markdown>
@@ -452,7 +683,7 @@ export default function App() {
                   </div>
 
                   <div className="p-4 border-t border-slate-100">
-                    <form 
+                    <form
                       className="flex gap-2"
                       onSubmit={(e) => {
                         e.preventDefault();
@@ -463,9 +694,9 @@ export default function App() {
                         }
                       }}
                     >
-                      <input 
+                      <input
                         name="message"
-                        type="text" 
+                        type="text"
                         placeholder={activeInterview.mode === 'automated' ? "Type candidate's response..." : "Type your question or candidate response..."}
                         className="flex-1 px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
                         autoComplete="off"
@@ -492,7 +723,7 @@ export default function App() {
                       {(() => {
                         const lastEval = [...messages].reverse().find(m => m.role === 'candidate' && m.evaluation)?.evaluation;
                         if (!lastEval) return null;
-                        
+
                         return (
                           <>
                             <div className="grid grid-cols-3 gap-2">

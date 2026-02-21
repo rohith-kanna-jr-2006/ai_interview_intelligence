@@ -1,158 +1,50 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
 import { MongoClient } from "mongodb";
 import path from "path";
 import dotenv from "dotenv";
+import { analyzeResume, evaluateResponse, generateInitialQuestion } from "./services/aiService.js";
 
 dotenv.config();
 
-const PORT = 3000;
+const PORT = 3005;
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
 const MONGODB_DB_NAME = "InterviewIq";
 
-// Database connections
-let db_sqlite = null;
+console.log("--- INTERVIEW IQ SERVER V3.0 (MongoDB ONLY) ---");
+
+// MongoDB Global State
 let mongoClient = null;
+let db = null;
+
+// Collections
+let usersColl, resumesColl, interviewsColl, questionsColl, responsesColl, analysisColl, fraudColl, reportsColl, transcriptsColl;
 
 async function initDatabases() {
   try {
-    // SQLite Initialization
-    db_sqlite = new Database("interview_iq.db");
-
-    // 1. Users Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS users (
-        user_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        phone TEXT,
-        role TEXT CHECK(role IN ('candidate', 'interviewer', 'admin')) DEFAULT 'candidate',
-        password_hash TEXT,
-        profile_photo_path TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // 2. Resume Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS resumes (
-        resume_id TEXT PRIMARY KEY,
-        user_id TEXT,
-        resume_file_path TEXT,
-        resume_text TEXT,
-        extracted_skills TEXT,
-        experience_years REAL,
-        education TEXT,
-        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(user_id)
-      )
-    `);
-
-    // 3. Job & Interview Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS interviews (
-        interview_id TEXT PRIMARY KEY,
-        user_id TEXT,
-        job_role TEXT,
-        job_description TEXT,
-        interview_mode TEXT CHECK(interview_mode IN ('AI', 'Manual', 'Hybrid')),
-        interview_language TEXT DEFAULT 'English',
-        interview_date DATETIME,
-        interview_duration INTEGER,
-        interview_level TEXT,
-        status TEXT CHECK(status IN ('scheduled', 'ongoing', 'completed')) DEFAULT 'scheduled',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(user_id)
-      )
-    `);
-
-    // 4. Questions Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS questions (
-        question_id TEXT PRIMARY KEY,
-        interview_id TEXT,
-        question_text TEXT NOT NULL,
-        question_type TEXT CHECK(question_type IN ('technical', 'HR', 'resume-based')),
-        difficulty_level TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(interview_id) REFERENCES interviews(interview_id)
-      )
-    `);
-
-    // 5. Responses Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS responses (
-        response_id TEXT PRIMARY KEY,
-        interview_id TEXT,
-        question_id TEXT,
-        candidate_answer TEXT,
-        audio_file_path TEXT,
-        video_file_path TEXT,
-        response_time INTEGER,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(interview_id) REFERENCES interviews(interview_id),
-        FOREIGN KEY(question_id) REFERENCES questions(question_id)
-      )
-    `);
-
-    // 6. AI Analysis Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS ai_analysis (
-        analysis_id TEXT PRIMARY KEY,
-        response_id TEXT,
-        relevance_score REAL,
-        confidence_score REAL,
-        sentiment_score REAL,
-        emotion_detected TEXT,
-        speech_clarity_score REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(response_id) REFERENCES responses(response_id)
-      )
-    `);
-
-    // 7. Fraud Detection Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS fraud_detection (
-        fraud_id TEXT PRIMARY KEY,
-        interview_id TEXT,
-        face_mismatch_flag INTEGER DEFAULT 0,
-        multiple_face_detected INTEGER DEFAULT 0,
-        tab_switch_count INTEGER DEFAULT 0,
-        voice_anomaly INTEGER DEFAULT 0,
-        suspicious_behavior_score REAL,
-        fraud_alert TEXT CHECK(fraud_alert IN ('Yes', 'No')) DEFAULT 'No',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(interview_id) REFERENCES interviews(interview_id)
-      )
-    `);
-
-    // 8. Final Report Table
-    db_sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS final_reports (
-        report_id TEXT PRIMARY KEY,
-        interview_id TEXT,
-        overall_score REAL,
-        technical_score REAL,
-        communication_score REAL,
-        confidence_score REAL,
-        fraud_risk_level TEXT,
-        ai_recommendation TEXT CHECK(ai_recommendation IN ('Hire', 'Reject', 'Review')),
-        generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(interview_id) REFERENCES interviews(interview_id)
-      )
-    `);
-
-    console.log("SQLite connected and initialized with 8-table normalized schema.");
-
-    // MongoDB Initialization
     console.log("Connecting to MongoDB at:", MONGODB_URI);
-    mongoClient = new MongoClient(MONGODB_URI);
+    mongoClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000
+    });
     await mongoClient.connect();
-    console.log("MongoDB connected.");
+    db = mongoClient.db(MONGODB_DB_NAME);
+
+    // Initialize 8 Collections + Heritage Transcript
+    usersColl = db.collection("users");
+    resumesColl = db.collection("resumes");
+    interviewsColl = db.collection("interviews");
+    questionsColl = db.collection("questions");
+    responsesColl = db.collection("responses");
+    analysisColl = db.collection("ai_analysis");
+    fraudColl = db.collection("fraud_detection");
+    reportsColl = db.collection("final_reports");
+    transcriptsColl = db.collection("transcripts");
+
+    console.log("MongoDB connected and collections initialized.");
 
   } catch (error) {
-    console.error("Database initialization failed:", error);
+    console.error("MongoDB initialization failed:", error);
+    process.exit(1);
   }
 }
 
@@ -162,19 +54,16 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  const db = mongoClient?.db(MONGODB_DB_NAME);
-  const resumesColl = db?.collection("resumes");
-  const transcriptsColl = db?.collection("transcripts");
-
   // --- User & Resume Endpoints ---
   app.post("/api/users", async (req, res) => {
     try {
-      const { user_id, name, email, phone, role, password_hash } = req.body;
-      if (!db_sqlite) throw new Error("SQLite not connected");
-      db_sqlite.prepare(
-        "INSERT INTO users (user_id, name, email, phone, role, password_hash) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(user_id, name, email, phone, role, password_hash);
-      res.json({ success: true, user_id });
+      const userData = req.body;
+      await usersColl.updateOne(
+        { user_id: userData.user_id },
+        { $set: { ...userData, created_at: new Date() } },
+        { upsert: true }
+      );
+      res.json({ success: true, user_id: userData.user_id });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -182,12 +71,13 @@ async function startServer() {
 
   app.post("/api/resumes", async (req, res) => {
     try {
-      const { resume_id, user_id, resume_text, extracted_skills, experience_years, education } = req.body;
-      if (!db_sqlite) throw new Error("SQLite not connected");
-      db_sqlite.prepare(
-        "INSERT INTO resumes (resume_id, user_id, resume_text, extracted_skills, experience_years, education) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(resume_id, user_id, resume_text, extracted_skills, experience_years, education);
-      res.json({ success: true, resume_id });
+      const resumeData = req.body;
+      await resumesColl.updateOne(
+        { resume_id: resumeData.resume_id },
+        { $set: { ...resumeData, upload_date: new Date() } },
+        { upsert: true }
+      );
+      res.json({ success: true, resume_id: resumeData.resume_id });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -196,14 +86,34 @@ async function startServer() {
   // --- Interview Endpoints ---
   app.get("/api/interviews", async (req, res) => {
     try {
-      if (!db_sqlite) return res.status(500).json({ error: "SQLite not connected" });
-      // JOIN with users to get candidate name if needed, or just return interviews
-      const rows = db_sqlite.prepare(`
-        SELECT i.*, u.name as candidate_name 
-        FROM interviews i 
-        LEFT JOIN users u ON i.user_id = u.user_id 
-        ORDER BY i.created_at DESC
-      `).all();
+      // Aggregate to get candidate name from users collection
+      const rows = await interviewsColl.aggregate([
+        {
+          $lookup: {
+            from: "users",
+            localField: "user_id",
+            foreignField: "user_id",
+            as: "user"
+          }
+        },
+        { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            interview_id: 1,
+            user_id: 1,
+            job_role: 1,
+            job_description: 1,
+            interview_mode: 1,
+            interview_language: 1,
+            interview_duration: 1,
+            interview_level: 1,
+            status: 1,
+            created_at: 1,
+            candidate_name: "$user.name"
+          }
+        },
+        { $sort: { created_at: -1 } }
+      ]).toArray();
       res.json(rows);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -212,36 +122,48 @@ async function startServer() {
 
   app.post("/api/interviews", async (req, res) => {
     try {
-      const {
-        interview_id,
-        user_id,
-        job_role,
-        job_description,
-        interview_mode,
-        interview_language,
-        interview_duration,
-        interview_level
-      } = req.body;
+      const interviewData = req.body;
+      await interviewsColl.insertOne({
+        ...interviewData,
+        status: 'ongoing',
+        created_at: new Date()
+      });
 
-      if (!db_sqlite) throw new Error("SQLite not connected");
-      db_sqlite.prepare(`
-        INSERT INTO interviews (
-          interview_id, user_id, job_role, job_description, 
-          interview_mode, interview_language, interview_duration, 
-          interview_level, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ongoing')
-      `).run(
-        interview_id, user_id, job_role, job_description,
-        interview_mode, interview_language, interview_duration,
-        interview_level
-      );
-
-      // Initialize transcription in MongoDB (optional but kept for heritage)
-      if (transcriptsColl) {
-        await transcriptsColl.insertOne({ interview_id, messages: [] });
-      }
+      // Initialize transcription
+      await transcriptsColl.insertOne({ interview_id: interviewData.interview_id, messages: [] });
 
       res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- AI Logic Endpoints ---
+  app.post("/api/ai/analyze-resume", async (req, res) => {
+    try {
+      const { resume_text, job_description } = req.body;
+      const analysis = await analyzeResume(resume_text, job_description);
+      res.json(analysis);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ai/evaluate-response", async (req, res) => {
+    try {
+      const { question, answer, resumeContext, jobDescription, previousHistory } = req.body;
+      const evaluation = await evaluateResponse(question, answer, resumeContext, jobDescription, previousHistory);
+      res.json(evaluation);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ai/generate-initial-question", async (req, res) => {
+    try {
+      const { resumeData, jobDescription } = req.body;
+      const question = await generateInitialQuestion(resumeData, jobDescription);
+      res.json({ question });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -251,24 +173,33 @@ async function startServer() {
     try {
       const { id } = req.params;
 
-      if (!db_sqlite) throw new Error("SQLite not connected");
-      const interview = db_sqlite.prepare(`
-        SELECT i.*, u.name as candidate_name 
-        FROM interviews i 
-        LEFT JOIN users u ON i.user_id = u.user_id 
-        WHERE i.interview_id = ?
-      `).get(id);
+      const interview = await interviewsColl.aggregate([
+        { $match: { interview_id: id } },
+        {
+          $lookup: {
+            from: "users",
+            localField: "user_id",
+            foreignField: "user_id",
+            as: "user"
+          }
+        },
+        { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } }
+      ]).next();
 
       if (!interview) return res.status(404).json({ error: "Interview not found" });
 
-      // Fetch resume from SQLite
-      const resume = db_sqlite.prepare("SELECT * FROM resumes WHERE user_id = ? ORDER BY upload_date DESC LIMIT 1").get(interview.user_id);
+      // Fetch resume
+      const resume = await resumesColl.findOne(
+        { user_id: interview.user_id },
+        { sort: { upload_date: -1 } }
+      );
 
-      // Fetch transcript from MongoDB
-      const transcriptDoc = transcriptsColl ? await transcriptsColl.findOne({ interview_id: id }) : null;
+      // Fetch transcript
+      const transcriptDoc = await transcriptsColl.findOne({ interview_id: id });
 
       res.json({
         ...interview,
+        candidate_name: interview.user?.name,
         resume_text: resume?.resume_text,
         extracted_skills: resume?.extracted_skills,
         messages: transcriptDoc?.messages || []
@@ -283,71 +214,114 @@ async function startServer() {
       const { id } = req.params;
       const { role, content, evaluation, question_id, response_id } = req.body;
 
-      if (!db_sqlite) throw new Error("SQLite not connected");
+      // 1. Save to transcription
+      const newMessage = {
+        role,
+        content,
+        evaluation,
+        created_at: new Date()
+      };
+      await transcriptsColl.updateOne(
+        { interview_id: id },
+        { $push: { messages: newMessage } }
+      );
 
-      // 1. Save message to transcription (MongoDB)
-      if (transcriptsColl) {
-        const newMessage = {
-          role,
-          content,
-          evaluation,
-          created_at: new Date()
-        };
-        await transcriptsColl.updateOne(
-          { interview_id: id },
-          { $push: { messages: newMessage } }
-        );
-      }
-
-      // 2. If it's a question from the interviewer, save to questions table
+      // 2. Questions Tracking
       if (role === 'interviewer' && question_id) {
-        db_sqlite.prepare(`
-          INSERT INTO questions (question_id, interview_id, question_text, question_type)
-          VALUES (?, ?, ?, ?)
-        `).run(question_id, id, content, 'technical'); // Defaulting to technical for now
+        await questionsColl.insertOne({
+          question_id,
+          interview_id: id,
+          question_text: content,
+          question_type: 'technical',
+          created_at: new Date()
+        });
       }
 
-      // 3. If it's a candidate response, save to responses and ai_analysis
+      // 3. Responses Tracking
       if (role === 'candidate' && response_id && question_id) {
-        db_sqlite.prepare(`
-          INSERT INTO responses (response_id, interview_id, question_id, candidate_answer)
-          VALUES (?, ?, ?, ?)
-        `).run(response_id, id, question_id, content);
+        await responsesColl.insertOne({
+          response_id,
+          interview_id: id,
+          question_id,
+          candidate_answer: content,
+          timestamp: new Date()
+        });
 
         if (evaluation) {
           const analysis_id = Math.random().toString(36).substring(7);
-          db_sqlite.prepare(`
-            INSERT INTO ai_analysis (
-              analysis_id, response_id, relevance_score, 
-              confidence_score, sentiment_score, emotion_detected
-            ) VALUES (?, ?, ?, ?, ?, ?)
-          `).run(
+          await analysisColl.insertOne({
             analysis_id,
             response_id,
-            evaluation.scores?.relevance || 0,
-            evaluation.scores?.technical || 0, // Mapping technical score to confidence/tech
-            0.5, // Default sentiment
-            evaluation.sentiment || 'neutral'
-          );
+            relevance_score: evaluation.scores?.relevance || 0,
+            confidence_score: evaluation.scores?.technical || 0,
+            sentiment_score: 0.5,
+            emotion_detected: evaluation.sentiment || 'neutral',
+            speech_clarity_score: 0.8, // Default or calculated
+            created_at: new Date()
+          });
 
-          // 4. Handle Red Flags in fraud_detection
           if (evaluation.red_flags?.length > 0) {
             const fraud_id = Math.random().toString(36).substring(7);
-            db_sqlite.prepare(`
-              INSERT INTO fraud_detection (
-                fraud_id, interview_id, suspicious_behavior_score, fraud_alert
-              ) VALUES (?, ?, ?, ?)
-            `).run(
+            await fraudColl.insertOne({
               fraud_id,
-              id,
-              evaluation.red_flags.length * 0.1, // Simple score
-              'Yes'
-            );
+              interview_id: id,
+              face_mismatch_flag: 0,
+              multiple_face_detected: 0,
+              tab_switch_count: 0,
+              voice_anomaly: 0,
+              suspicious_behavior_score: evaluation.red_flags.length * 0.1,
+              fraud_alert: 'Yes',
+              created_at: new Date()
+            });
           }
         }
       }
 
       res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/interviews/:id/finalize", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { feedback_notes } = req.body;
+
+      // 1. Update interview status
+      await interviewsColl.updateOne(
+        { interview_id: id },
+        { $set: { status: 'completed' } }
+      );
+
+      // 2. Aggregate scores
+      const interviewResponses = await responsesColl.find({ interview_id: id }).toArray();
+      const responseIds = interviewResponses.map(r => r.response_id);
+
+      const analyses = await analysisColl.find({ response_id: { $in: responseIds } }).toArray();
+      const avgRel = analyses.reduce((acc, a) => acc + (a.relevance_score || 0), 0) / (analyses.length || 1);
+      const avgTech = analyses.reduce((acc, a) => acc + (a.confidence_score || 0), 0) / (analyses.length || 1);
+
+      const fraudCount = await fraudColl.countDocuments({ interview_id: id, fraud_alert: 'Yes' });
+
+      const report_id = 'rep_' + Math.random().toString(36).substring(7);
+      const overall_score = (avgRel + avgTech) / 2;
+      const recommendation = overall_score > 7 ? 'Hire' : (overall_score > 4 ? 'Review' : 'Reject');
+
+      await reportsColl.insertOne({
+        report_id,
+        interview_id: id,
+        overall_score,
+        technical_score: avgTech,
+        communication_score: 7.5, // Logic can be expanded
+        confidence_score: avgRel,
+        fraud_risk_level: fraudCount > 0 ? 'High' : 'Low',
+        ai_recommendation: recommendation,
+        feedback_notes,
+        generated_at: new Date()
+      });
+
+      res.json({ success: true, report_id });
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
@@ -373,3 +347,4 @@ async function startServer() {
 }
 
 startServer();
+
