@@ -3,7 +3,8 @@ import { createServer as createViteServer } from "vite";
 import { MongoClient } from "mongodb";
 import path from "path";
 import dotenv from "dotenv";
-import { analyzeResume, evaluateResponse, generateInitialQuestion } from "./services/aiService.js";
+import multer from "multer";
+import { analyzeResume, evaluateResponse, generateInitialQuestion, generateFinalReport, generateInterviewQuestions } from "./services/aiService.js";
 
 dotenv.config();
 
@@ -53,6 +54,7 @@ async function startServer() {
 
   const app = express();
   app.use(express.json());
+  const upload = multer({ storage: multer.memoryStorage() });
 
   // --- Auth Endpoints ---
   app.post("/api/auth/signup", async (req, res) => {
@@ -194,8 +196,8 @@ async function startServer() {
 
   app.post("/api/ai/evaluate-response", async (req, res) => {
     try {
-      const { question, answer, resumeContext, jobDescription, previousHistory } = req.body;
-      const evaluation = await evaluateResponse(question, answer, resumeContext, jobDescription, previousHistory);
+      const { question, answer, resumeContext, jobDescription, previousHistory, voiceMetrics } = req.body;
+      const evaluation = await evaluateResponse(question, answer, resumeContext, jobDescription, previousHistory, voiceMetrics);
       res.json(evaluation);
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -209,6 +211,19 @@ async function startServer() {
       res.json({ question });
     } catch (error) {
       res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/ai/generate-questions-from-resume", upload.single("resume"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No resume file uploaded" });
+      }
+      const questionsData = await generateInterviewQuestions(req.file.buffer);
+      res.json(questionsData);
+    } catch (error) {
+      console.error("Resume to Questions Error:", error);
+      res.status(500).json({ error: "Failed to generate questions from resume" });
     }
   });
 
@@ -245,6 +260,7 @@ async function startServer() {
         candidate_name: interview.user?.name,
         resume_text: resume?.resume_text,
         extracted_skills: resume?.extracted_skills,
+        analysis: resume?.analysis,
         messages: transcriptDoc?.messages || []
       });
     } catch (error) {
@@ -329,43 +345,68 @@ async function startServer() {
   app.post("/api/interviews/:id/finalize", async (req, res) => {
     try {
       const { id } = req.params;
-      const { feedback_notes } = req.body;
+      const { feedback_notes, isFraud } = req.body;
 
-      // 1. Update interview status
-      await interviewsColl.updateOne(
-        { interview_id: id },
-        { $set: { status: 'completed' } }
+      // 1. Fetch interview details, transcript, and resume
+      const interview = await interviewsColl.findOne({ interview_id: id });
+      if (!interview) return res.status(404).json({ error: "Interview not found" });
+
+      const resume = await resumesColl.findOne({ user_id: interview.user_id }, { sort: { upload_date: -1 } });
+      const transcriptDoc = await transcriptsColl.findOne({ interview_id: id });
+      const transcriptText = (transcriptDoc?.messages || []).map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n');
+
+      // 2. Aggregate fraud/metrics data
+      const fraudCount = await fraudColl.countDocuments({ interview_id: id, fraud_alert: 'Yes' });
+      const aggregatedMetrics = {
+        total_fraud_flags: fraudCount,
+        interview_mode: interview.interview_mode,
+        duration: interview.interview_duration,
+        feedback: feedback_notes || 'None'
+      };
+
+      // 3. Generate structured AI report
+      let aiReport = await generateFinalReport(
+        resume?.resume_text || "No resume provided",
+        interview.job_description || "No job description",
+        transcriptText,
+        aggregatedMetrics
       );
 
-      // 2. Aggregate scores
-      const interviewResponses = await responsesColl.find({ interview_id: id }).toArray();
-      const responseIds = interviewResponses.map(r => r.response_id);
+      // 4. Overwrite scores if Fraud detected
+      if (isFraud) {
+        aiReport.overall_score = 0;
+        aiReport.technical_score = 0;
+        aiReport.communication_score = 0;
+        aiReport.ai_recommendation = "Reject (Fraud)";
+        aiReport.detailed_feedback = "Interview terminated automatically due to maximum fraud risk (100%).";
+      }
 
-      const analyses = await analysisColl.find({ response_id: { $in: responseIds } }).toArray();
-      const avgRel = analyses.reduce((acc, a) => acc + (a.relevance_score || 0), 0) / (analyses.length || 1);
-      const avgTech = analyses.reduce((acc, a) => acc + (a.confidence_score || 0), 0) / (analyses.length || 1);
-
-      const fraudCount = await fraudColl.countDocuments({ interview_id: id, fraud_alert: 'Yes' });
-
+      // 5. Save report
       const report_id = 'rep_' + Math.random().toString(36).substring(7);
-      const overall_score = (avgRel + avgTech) / 2;
-      const recommendation = overall_score > 7 ? 'Hire' : (overall_score > 4 ? 'Review' : 'Reject');
-
       await reportsColl.insertOne({
         report_id,
         interview_id: id,
-        overall_score,
-        technical_score: avgTech,
-        communication_score: 7.5, // Logic can be expanded
-        confidence_score: avgRel,
-        fraud_risk_level: fraudCount > 0 ? 'High' : 'Low',
-        ai_recommendation: recommendation,
-        feedback_notes,
+        overall_score: aiReport.overall_score || 0,
+        technical_score: aiReport.technical_score || 0,
+        communication_score: aiReport.communication_score || 0,
+        strengths: aiReport.strengths || [],
+        weaknesses: aiReport.weaknesses || [],
+        fraud_risk_level: isFraud ? 'Maximum' : (fraudCount > 0 ? 'High' : 'Low'),
+        fraud_analysis: isFraud ? "Maximum risk score reached (100%)." : (aiReport.fraud_analysis || "No flags mentioned"),
+        ai_recommendation: aiReport.ai_recommendation || "Review",
+        detailed_feedback: aiReport.detailed_feedback || "No feedback generated",
         generated_at: new Date()
       });
 
+      // 6. Update interview status
+      await interviewsColl.updateOne(
+        { interview_id: id },
+        { $set: { status: isFraud ? 'terminated' : 'completed' } }
+      );
+
       res.json({ success: true, report_id });
     } catch (error) {
+      console.error(error);
       res.status(500).json({ error: error.message });
     }
   });

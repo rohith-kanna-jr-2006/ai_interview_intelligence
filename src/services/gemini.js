@@ -14,12 +14,12 @@ export const analyzeResume = async (resumeText, jobDescription) => {
   }
 };
 
-export const evaluateResponse = async (question, answer, resumeContext, jobDescription, previousHistory) => {
+export const evaluateResponse = async (question, answer, resumeContext, jobDescription, previousHistory, voiceMetrics = null) => {
   try {
     const response = await fetch('/api/ai/evaluate-response', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, answer, resumeContext, jobDescription, previousHistory })
+      body: JSON.stringify({ question, answer, resumeContext, jobDescription, previousHistory, voiceMetrics })
     });
     return await response.json();
   } catch (error) {

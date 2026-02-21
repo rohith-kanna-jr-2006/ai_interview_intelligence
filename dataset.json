@@ -1,0 +1,42 @@
+[
+    {
+        "input": "Level: Intermediate, Skill: React, Context: Developed a Smart Parking System dashboard",
+        "target": "How did you manage real-time state updates for parking spot availability in your MERN stack application?"
+    },
+    {
+        "input": "Level: Beginner, Skill: Python, Context: Built a railway PNR status checker",
+        "target": "Can you explain how you handled the API response parsing for the PNR status in your Python script?"
+    },
+    {
+        "input": "Level: Advanced, Skill: Node.js, Context: Scaled a microservices-based e-commerce backend",
+        "target": "What strategy did you use for inter-service communication and maintaining data consistency across your Node.js microservices?"
+    },
+    {
+        "input": "Level: Intermediate, Skill: MongoDB, Context: Optimized database queries for a social media app",
+        "target": "How did you design your indexing strategy to handle high-frequency reads and writes for the user feed in MongoDB?"
+    },
+    {
+        "input": "Level: Beginner, Skill: HTML/CSS, Context: Created a responsive portfolio website",
+        "target": "How did you ensure that your portfolio layouts remain consistent across different screen sizes using CSS Flexbox or Grid?"
+    },
+    {
+        "input": "Level: Advanced, Skill: Machine Learning, Context: Built a fraud detection system for banking",
+        "target": "Which evaluation metrics did you prioritize for your fraud detection model, and how did you handle the class imbalance in your dataset?"
+    },
+    {
+        "input": "Level: Intermediate, Skill: Java, Context: Developed a secure banking API using Spring Boot",
+        "target": "How did you implement OAuth2 or JWT-based authentication to secure the sensitive endpoints in your Spring Boot application?"
+    },
+    {
+        "input": "Level: Beginner, Skill: SQL, Context: Managed a library database system",
+        "target": "How did you handle the relationships between the 'Books' and 'Authors' tables to ensure data integrity during insertions?"
+    },
+    {
+        "input": "Level: Advanced, Skill: AWS, Context: Deployed a serverless application using Lambda",
+        "target": "How did you manage cold starts and shared state across multiple AWS Lambda function executions in your architecture?"
+    },
+    {
+        "input": "Level: Intermediate, Skill: Docker, Context: Containerized a multi-tier web application",
+        "target": "Can you describe the multi-stage build process you used to minimize the final Docker image size for your production environment?"
+    }
+]

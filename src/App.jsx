@@ -14,12 +14,21 @@ import {
   ArrowLeft,
   CheckCircle2,
   AlertCircle,
-  UploadCloud
+  UploadCloud,
+  Mic,
+  MicOff
 } from 'lucide-react';
+
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { analyzeResume, evaluateResponse, generateInitialQuestion } from './services/gemini';
 import Markdown from 'react-markdown';
+import * as pdfjsLib from 'pdfjs-dist';
+import Webcam from 'react-webcam';
+import { Camera } from 'lucide-react';
+
+// Tell pdf.js where to find its worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 // --- Components ---
 
@@ -104,6 +113,7 @@ export default function App() {
   // Expanded Form State matching requirements
   const [formData, setFormData] = useState({
     // User Data
+    user_id: '',
     candidate_name: '',
     email: '',
     phone: '',
@@ -131,9 +141,171 @@ export default function App() {
 
   const [currentQuestionId, setCurrentQuestionId] = useState(null);
 
+  // Ask Multiple Questions States
+  const [isQuestionsModalOpen, setIsQuestionsModalOpen] = useState(false);
+  const [selectedQuestions, setSelectedQuestions] = useState([]);
+
+  const handleAskSelectedQuestions = async () => {
+    if (!activeInterview || selectedQuestions.length === 0) return;
+
+    setIsQuestionsModalOpen(false);
+
+    const combinedQuestion = "Please address the following questions:\n\n" + selectedQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n');
+    const next_question_id = 'q_' + Math.random().toString(36).substring(7);
+
+    setMessages(prev => [...prev, {
+      id: Date.now(),
+      role: 'interviewer',
+      content: combinedQuestion,
+      created_at: new Date().toISOString()
+    }]);
+
+    try {
+      await fetch(`/api/interviews/${activeInterview.interview_id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: 'interviewer',
+          content: combinedQuestion,
+          question_id: next_question_id
+        })
+      });
+      setCurrentQuestionId(next_question_id);
+      setSelectedQuestions([]);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+
+  // Voice Analysis States
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [recognitionObj, setRecognitionObj] = useState(null);
+  const [voiceMetrics, setVoiceMetrics] = useState(null);
+
+  // Computer Vision Simulator State
+  const [cvMetrics, setCvMetrics] = useState({
+    attentionScore: 100,
+    faceCount: 1,
+    gazeStatus: 'Looking at screen',
+    fraudRiskScore: 0,
+    fraudAlert: false
+  });
+
   useEffect(() => {
     fetchInterviews();
   }, []);
+
+  useEffect(() => {
+    let interval;
+    if (view === 'session' && activeInterview) {
+      interval = setInterval(() => {
+        const rand = Math.random();
+        let newFaceCount = 1;
+        let newGaze = 'Looking at screen';
+        let newAttention = Math.floor(80 + Math.random() * 20); // 80-100 normally
+
+        let riskIncrease = 0;
+        let isFraud = false;
+
+        // Simulating 5% chance of looking away
+        if (rand < 0.05) {
+          newGaze = 'Looking away';
+          newAttention = Math.floor(40 + Math.random() * 20);
+          riskIncrease += 10;
+        }
+        // Simulating 1% chance of multiple faces
+        if (rand > 0.99) {
+          newFaceCount = 2;
+          newAttention = 10;
+          riskIncrease += 30;
+        }
+
+        setCvMetrics(prev => {
+          const newRiskScore = Math.min(prev.fraudRiskScore + riskIncrease, 100);
+          const shouldAlert = newRiskScore > 60;
+          if (shouldAlert && !prev.fraudAlert) {
+            console.warn("FRAUD RISK EXCEEDED SAFE THRESHOLDS");
+          }
+          return {
+            ...prev,
+            attentionScore: newAttention,
+            faceCount: newFaceCount,
+            gazeStatus: newGaze,
+            fraudRiskScore: newRiskScore,
+            fraudAlert: shouldAlert
+          };
+        });
+      }, 3000);
+
+      const handleFraudEvent = (reason, riskPoints) => {
+        setCvMetrics(prev => {
+          const newRiskScore = Math.min(prev.fraudRiskScore + riskPoints, 100);
+          const shouldAlert = newRiskScore > 60;
+          return {
+            ...prev,
+            fraudRiskScore: newRiskScore,
+            fraudAlert: shouldAlert,
+            gazeStatus: reason,
+            attentionScore: 0
+          };
+        });
+        alert(`🚨 CHEATING WARNING: ${reason}. Your action has been flagged by the AI Proctor.`);
+      };
+
+      const handleVisibilityChange = () => {
+        if (document.hidden) {
+          handleFraudEvent('Tab Switched or Minimized', 20);
+        }
+      };
+
+      const handleWindowBlur = () => {
+        handleFraudEvent('Window Lost Focus', 15);
+      };
+
+      const handleWindowResize = () => {
+        // Detecting split screen or un-maximizing
+        if (window.outerWidth < window.screen.availWidth * 0.8 || window.outerHeight < window.screen.availHeight * 0.8) {
+          handleFraudEvent('Split Screen / Resized', 25);
+        }
+      };
+
+      document.addEventListener("visibilitychange", handleVisibilityChange);
+      window.addEventListener("blur", handleWindowBlur);
+      window.addEventListener("resize", handleWindowResize);
+
+      return () => {
+        clearInterval(interval);
+        document.removeEventListener("visibilitychange", handleVisibilityChange);
+        window.removeEventListener("blur", handleWindowBlur);
+        window.removeEventListener("resize", handleWindowResize);
+      };
+    }
+  }, [view, activeInterview]);
+
+  useEffect(() => {
+    if (cvMetrics.fraudRiskScore >= 100) {
+      alert("🚨 MAXIMUM RISK SCORE REACHED. The interview will be terminated automatically and scores will be set to zero.");
+
+      const terminateInterview = async () => {
+        if (activeInterview) {
+          try {
+            await fetch(`/api/interviews/${activeInterview.interview_id}/finalize`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ isFraud: true })
+            });
+          } catch (e) {
+            console.error("Failed to auto-finalize:", e);
+          }
+        }
+        window.close();
+      };
+
+      terminateInterview();
+    }
+  }, [cvMetrics.fraudRiskScore, activeInterview]);
 
   const fetchInterviews = async () => {
     const res = await fetch('/api/interviews');
@@ -152,6 +324,20 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
+        setFormData(prev => ({
+          ...prev,
+          user_id: data.user.user_id || prev.user_id,
+          candidate_name: data.user.name || prev.candidate_name,
+          email: data.user.email || prev.email,
+          phone: data.user.phone || prev.phone,
+          password: data.user.password || prev.password,
+          dob: data.user.dob || prev.dob,
+          gender: data.user.gender || prev.gender,
+          role: data.user.role || prev.role,
+          address: data.user.address || prev.address,
+          education: data.user.education || prev.education,
+          manual_skills: data.user.skills || prev.manual_skills
+        }));
         setView('dashboard');
       } else {
         alert(data.error || "Login Failed");
@@ -178,6 +364,7 @@ export default function App() {
       if (data.success) {
         setFormData(prev => ({
           ...prev,
+          user_id: data.user.user_id || prev.user_id,
           candidate_name: data.user.name || signupData.name,
           email: data.user.email || signupData.email,
           password: data.user.password || signupData.password,
@@ -207,7 +394,7 @@ export default function App() {
   const handleCreateInterview = async () => {
     setIsLoading(true);
     try {
-      const user_id = 'u_' + Math.random().toString(36).substring(7);
+      const user_id = formData.user_id || ('u_' + Math.random().toString(36).substring(7));
       const resume_id = 'r_' + Math.random().toString(36).substring(7);
       const interview_id = 'i_' + Math.random().toString(36).substring(7);
 
@@ -229,8 +416,16 @@ export default function App() {
         })
       });
 
-      // 2. Analyze resume
+      // 2. Analyze resume (fetch base skills extraction)
       const resumeAnalysis = await analyzeResume(formData.resume_text, formData.job_description);
+
+      // Explicitly override generic questions with our new strictly generated PDF questions if they exist!
+      if (formData.generated_questions && formData.generated_questions.length > 0) {
+        resumeAnalysis.resume_based_questions = formData.generated_questions.filter(q => q.type?.toLowerCase().includes('project')).map(q => q.question);
+        resumeAnalysis.technical_questions = formData.generated_questions.filter(q => q.type?.toLowerCase().includes('technical')).map(q => q.question);
+        resumeAnalysis.hr_questions = formData.generated_questions.filter(q => q.type?.toLowerCase().includes('hr')).map(q => q.question);
+        resumeAnalysis.scenario_based_questions = formData.generated_questions.filter(q => q.type?.toLowerCase().includes('scenario')).map(q => q.question);
+      }
 
       // 3. Create Resume record
       await fetch('/api/resumes', {
@@ -242,7 +437,8 @@ export default function App() {
           resume_text: formData.resume_text,
           extracted_skills: (resumeAnalysis.technical_skills.join(', ') + ', ' + formData.manual_skills).trim(', '),
           experience_years: resumeAnalysis.experience_years,
-          education: formData.education || 'Extracted from Resume'
+          education: formData.education || 'Extracted from Resume',
+          analysis: resumeAnalysis
         })
       });
 
@@ -297,7 +493,7 @@ export default function App() {
     setView('session');
   };
 
-  const handleSendMessage = async (content) => {
+  const handleSendMessage = async (content, finalVoiceMetrics = null) => {
     if (!activeInterview) return;
 
     // 1. Add candidate message
@@ -320,9 +516,10 @@ export default function App() {
       const evaluation = await evaluateResponse(
         lastInterviewerMsg?.content || "Tell me about yourself",
         content,
-        activeInterview.resume_text,
+        activeInterview.resume_text + (activeInterview.analysis ? `\n\nAI Recommended Questions Base to Pick From: ${JSON.stringify(activeInterview.analysis)}` : ''),
         activeInterview.job_description,
-        history
+        history,
+        finalVoiceMetrics
       );
 
       // 3. Save candidate message with evaluation and IDs
@@ -391,6 +588,73 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleMicClick = () => {
+    if (isRecording) {
+      recognitionObj?.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please use Chrome.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = formData.interview_language === "English" ? "en-US" : "en-US";
+
+    let metrics = {
+      startTime: Date.now(),
+      firstWordTime: null,
+      pauses: 0,
+      lastWordTime: Date.now()
+    };
+
+    let finalTranscript = currentMessage;
+
+    recognition.onstart = () => {
+      setIsRecording(true);
+      setVoiceMetrics(metrics);
+    };
+
+    recognition.onresult = (event) => {
+      const now = Date.now();
+      if (!metrics.firstWordTime) metrics.firstWordTime = now;
+
+      const timeSinceLastWord = now - metrics.lastWordTime;
+      if (timeSinceLastWord > 2000) {
+        metrics.pauses += 1;
+      }
+      metrics.lastWordTime = now;
+
+      let interimTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript + ' ';
+        } else {
+          interimTranscript += event.results[i][0].transcript;
+        }
+      }
+      setCurrentMessage(finalTranscript + interimTranscript);
+      setVoiceMetrics(metrics);
+    };
+
+    recognition.onerror = (event) => {
+      console.error(event.error);
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognition.start();
+    setRecognitionObj(recognition);
   };
 
   return (
@@ -632,7 +896,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {interviews.map((interview) => (
-                  <Card key={interview.id} className="group hover:border-slate-400 transition-colors cursor-pointer" onClick={() => handleOpenInterview(interview.id)}>
+                  <Card key={interview.interview_id} className="group hover:border-slate-400 transition-colors cursor-pointer" onClick={() => handleOpenInterview(interview.interview_id)}>
                     <div className="p-5 space-y-4">
                       <div className="flex justify-between items-start">
                         <div className="w-12 h-12 bg-brand-50 rounded-2xl flex items-center justify-center text-brand-600">
@@ -697,110 +961,7 @@ export default function App() {
                   </div>
 
                   <div className="space-y-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Full Name</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Jane Doe"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-                          value={formData.candidate_name}
-                          onChange={e => setFormData({ ...formData, candidate_name: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Email ID</label>
-                        <input
-                          type="email"
-                          placeholder="jane@example.com"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-                          value={formData.email}
-                          onChange={e => setFormData({ ...formData, email: e.target.value })}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Phone</label>
-                        <input
-                          type="text"
-                          placeholder="+1 234 567 890"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-                          value={formData.phone}
-                          onChange={e => setFormData({ ...formData, phone: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Secure Password</label>
-                        <input
-                          type="password"
-                          placeholder="••••••••"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-                          value={formData.password}
-                          onChange={e => setFormData({ ...formData, password: e.target.value })}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Date of Birth</label>
-                        <input
-                          type="date"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                          value={formData.dob}
-                          onChange={e => setFormData({ ...formData, dob: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Gender</label>
-                        <select
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                          value={formData.gender}
-                          onChange={e => setFormData({ ...formData, gender: e.target.value })}
-                        >
-                          <option value="">Select</option>
-                          <option value="Male">Male</option>
-                          <option value="Female">Female</option>
-                          <option value="Other">Other</option>
-                        </select>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Address</label>
-                        <input
-                          type="text"
-                          placeholder="City, Country"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                          value={formData.address}
-                          onChange={e => setFormData({ ...formData, address: e.target.value })}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Education Details</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. MS in CS, Stanford"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                          value={formData.education}
-                          onChange={e => setFormData({ ...formData, education: e.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Manual Skills (Comma Separated)</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. React, Node.js, AWS"
-                          className="w-full px-4 py-3 rounded-xl border border-slate-200 outline-none"
-                          value={formData.manual_skills}
-                          onChange={e => setFormData({ ...formData, manual_skills: e.target.value })}
-                        />
-                      </div>
-                    </div>
-
+                    {/* User profile details omitted since they are generated automatically from auth */}
                     <div className="space-y-2">
                       <label className="text-sm font-semibold uppercase tracking-wider text-slate-500">Target Jab Role</label>
                       <input
@@ -854,19 +1015,53 @@ export default function App() {
                           <FileText className="w-4 h-4" /> Resume Content (Text Extraction)
                         </label>
                         <label className="cursor-pointer flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-brand-600 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg transition-colors">
-                          <UploadCloud className="w-4 h-4" /> Import .txt
+                          <UploadCloud className="w-4 h-4" /> Import File (.txt, .pdf)
                           <input
                             type="file"
-                            accept=".txt"
+                            accept=".txt,.pdf"
                             className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const reader = new FileReader();
-                                reader.onload = (event) => {
-                                  setFormData(prev => ({ ...prev, resume_text: event.target.result }));
-                                };
-                                reader.readAsText(file);
+                            onChange={async (e) => {
+                              try {
+                                setIsLoading(true);
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+
+                                if (file.type === "application/pdf" || file.name.endsWith(".pdf")) {
+                                  const formDataUpload = new FormData();
+                                  formDataUpload.append("resume", file);
+
+                                  const response = await fetch("/api/ai/generate-questions-from-resume", {
+                                    method: "POST",
+                                    body: formDataUpload,
+                                  });
+
+                                  if (!response.ok) {
+                                    throw new Error("Failed to process resume via API");
+                                  }
+
+                                  const data = await response.json();
+
+                                  // Use the returned data to populate the text area and candidate details
+                                  setFormData(prev => ({
+                                    ...prev,
+                                    resume_text: data.rawText || "Parsed text unavailable",
+                                    candidate_name: prev.candidate_name || data.candidate_name,
+                                    interview_level: data.experience_level || prev.interview_level,
+                                    // Save the generated questions for later injection
+                                    generated_questions: data.questions
+                                  }));
+                                } else {
+                                  const reader = new FileReader();
+                                  reader.onload = (event) => {
+                                    setFormData(prev => ({ ...prev, resume_text: event.target.result }));
+                                  };
+                                  reader.readAsText(file);
+                                }
+                              } catch (err) {
+                                console.error(err);
+                                alert("Error reading file.");
+                              } finally {
+                                setIsLoading(false);
                               }
                             }}
                           />
@@ -874,7 +1069,7 @@ export default function App() {
                       </div>
                       <textarea
                         rows={4}
-                        placeholder="Paste resume text here..."
+                        placeholder="Paste resume text or import a file here..."
                         className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all resize-none font-mono text-sm"
                         value={formData.resume_text}
                         onChange={e => setFormData({ ...formData, resume_text: e.target.value })}
@@ -979,13 +1174,22 @@ export default function App() {
                       className="flex gap-2"
                       onSubmit={(e) => {
                         e.preventDefault();
-                        const input = e.currentTarget.elements.namedItem('message');
-                        if (input.value.trim()) {
-                          handleSendMessage(input.value);
-                          input.value = '';
+                        if (currentMessage.trim()) {
+                          handleSendMessage(currentMessage, voiceMetrics);
+                          setCurrentMessage('');
+                          setVoiceMetrics(null);
                         }
                       }}
                     >
+                      <Button
+                        variant={isRecording ? "danger" : "outline"}
+                        onClick={handleMicClick}
+                        disabled={isLoading}
+                        type="button"
+                        className={isRecording ? "animate-pulse" : ""}
+                      >
+                        {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+                      </Button>
                       <input
                         name="message"
                         type="text"
@@ -993,8 +1197,10 @@ export default function App() {
                         className="flex-1 px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
                         autoComplete="off"
                         disabled={isLoading}
+                        value={currentMessage}
+                        onChange={(e) => setCurrentMessage(e.target.value)}
                       />
-                      <Button variant="primary" disabled={isLoading}>
+                      <Button variant="primary" disabled={isLoading} type="submit">
                         <ChevronRight className="w-5 h-5" />
                       </Button>
                     </form>
@@ -1004,6 +1210,41 @@ export default function App() {
 
               {/* Intelligence Sidebar */}
               <div className="w-96 flex flex-col gap-4">
+
+                {/* Webcam Box */}
+                <Card className="p-0 overflow-hidden bg-slate-900 text-white relative flex flex-col items-center justify-center min-h-[160px]">
+                  <Webcam audio={false} className="w-full h-full object-cover opacity-80 absolute inset-0" />
+
+                  <div className="absolute inset-0 p-3 flex flex-col justify-between pointer-events-none z-10 w-full h-full">
+                    <div className="flex items-center justify-between border-b border-white/20 pb-2 w-full">
+                      <div className="flex items-center gap-2">
+                        <Camera className="w-4 h-4 text-emerald-400" />
+                        <h3 className="font-bold text-sm">Proctor AI</h3>
+                      </div>
+                      {cvMetrics.fraudAlert ? <Badge variant="danger">FLAGGED</Badge> : <Badge variant="success">SECURE</Badge>}
+                    </div>
+
+                    <div className="flex justify-between items-start text-[10px] font-mono mt-auto pt-2 w-full">
+                      <div className="space-y-1">
+                        <div className={cn("bg-black/50 px-1.5 py-0.5 rounded w-fit", cvMetrics.gazeStatus !== 'Looking at screen' ? "text-red-400" : "text-emerald-400")}>
+                          STATUS: {cvMetrics.gazeStatus.toUpperCase()}
+                        </div>
+                        <div className={cn("bg-black/50 px-1.5 py-0.5 rounded w-fit", cvMetrics.attentionScore < 60 ? "text-red-400" : "text-emerald-400")}>
+                          ATTENTION: {cvMetrics.attentionScore}%
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end space-y-1">
+                        <div className={cn("bg-black/50 px-1.5 py-0.5 rounded h-fit", cvMetrics.faceCount > 1 ? "text-red-400" : "text-emerald-400")}>
+                          FACES: {cvMetrics.faceCount}
+                        </div>
+                        <div className={cn("bg-black/50 px-1.5 py-0.5 rounded h-fit font-bold", cvMetrics.fraudRiskScore > 60 ? "text-red-500 animate-pulse" : cvMetrics.fraudRiskScore > 20 ? "text-amber-400" : "text-emerald-400")}>
+                          RISK SCORE: {cvMetrics.fraudRiskScore}/100
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+
                 <Card className="p-5 space-y-6">
                   <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                     <BarChart3 className="w-5 h-5 text-slate-900" />
@@ -1035,8 +1276,14 @@ export default function App() {
 
                             <div className="space-y-2">
                               <p className="text-[10px] font-bold text-slate-400 uppercase">Sentiment</p>
-                              <div className="flex items-center gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <Badge variant="success">{lastEval.sentiment}</Badge>
+                                {lastEval.tone_analysis && (
+                                  <Badge variant="default">{lastEval.tone_analysis}</Badge>
+                                )}
+                                {lastEval.fluency_report && (
+                                  <Badge variant="warning">{lastEval.fluency_report}</Badge>
+                                )}
                               </div>
                             </div>
 
@@ -1083,17 +1330,40 @@ export default function App() {
                   <div className="space-y-4">
                     <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
                       <MessageSquare className="w-5 h-5 text-slate-900" />
-                      <h3 className="font-bold">Probing Questions</h3>
+                      <h3 className="font-bold">Generated Questions Bank</h3>
                     </div>
-                    <div className="space-y-3">
-                      {activeInterview.analysis?.probing_questions?.map((q, i) => (
-                        <div key={i} className="p-3 bg-brand-50 rounded-xl border border-brand-100">
-                          <p className="text-[11px] text-brand-800 font-medium leading-relaxed italic">
-                            "{q}"
-                          </p>
-                        </div>
-                      ))}
-                    </div>
+                    {activeInterview.analysis && (
+                      <div className="space-y-4">
+                        <Button
+                          variant="outline"
+                          className="w-full text-xs py-2"
+                          onClick={() => {
+                            setSelectedQuestions([]);
+                            setIsQuestionsModalOpen(true);
+                          }}
+                        >
+                          <Plus className="w-4 h-4 mr-1" /> Ask Multiple Questions
+                        </Button>
+                        {['resume_based_questions', 'technical_questions', 'scenario_based_questions', 'hr_questions'].map((category) => {
+                          const questions = activeInterview.analysis[category];
+                          if (!questions || !questions.length) return null;
+                          return (
+                            <div key={category} className="space-y-2">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase">{category.replace(/_/g, ' ')}</p>
+                              <div className="space-y-2">
+                                {questions.map((q, i) => (
+                                  <div key={i} className="p-2 bg-brand-50 rounded-lg border border-brand-100">
+                                    <p className="text-[10px] text-brand-800 font-medium leading-relaxed italic">
+                                      "{q}"
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div className="space-y-4">
@@ -1109,6 +1379,88 @@ export default function App() {
               </div>
             </motion.div>
           )}
+
+          {/* Multiple Questions Modal */}
+          {isQuestionsModalOpen && (
+            <div className="fixed inset-0 z-50 bg-black/50 flex flex-col items-center justify-center p-4 backdrop-blur-sm">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="bg-white rounded-3xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden"
+              >
+                <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-brand-100 text-brand-600 rounded-xl flex items-center justify-center">
+                      <MessageSquare className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-lg">Select Multiple Questions</h3>
+                      <p className="text-xs text-slate-500">Pick the ones you want to ask the candidate.</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsQuestionsModalOpen(false)} className="text-slate-400 hover:text-slate-600 font-bold w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-200 transition-colors">x</button>
+                </div>
+
+                <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                  {activeInterview?.analysis && ['resume_based_questions', 'technical_questions', 'scenario_based_questions', 'hr_questions'].map((category) => {
+                    const questions = activeInterview.analysis[category];
+                    if (!questions || !questions.length) return null;
+                    return (
+                      <div key={category} className="space-y-3">
+                        <p className="text-xs font-bold text-slate-900 uppercase tracking-widest bg-slate-100 px-3 py-1.5 rounded-lg w-fit">
+                          {category.replace(/_/g, ' ')}
+                        </p>
+                        <div className="space-y-2">
+                          {questions.map((q, i) => {
+                            const isSelected = selectedQuestions.includes(q);
+                            return (
+                              <div
+                                key={i}
+                                onClick={() => {
+                                  if (isSelected) {
+                                    setSelectedQuestions(selectedQuestions.filter(sq => sq !== q));
+                                  } else {
+                                    setSelectedQuestions([...selectedQuestions, q]);
+                                  }
+                                }}
+                                className={cn(
+                                  "p-3 rounded-xl border transition-all cursor-pointer flex gap-3 items-start",
+                                  isSelected ? "bg-brand-50 border-brand-200" : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                                )}
+                              >
+                                <div className={cn(
+                                  "w-5 h-5 rounded flex items-center justify-center shrink-0 border mt-0.5 transition-colors",
+                                  isSelected ? "bg-brand-600 border-brand-600 text-white" : "border-slate-300 bg-white"
+                                )}>
+                                  {isSelected && <CheckCircle2 className="w-3 h-3" />}
+                                </div>
+                                <p className={cn("text-sm leading-relaxed", isSelected ? "text-brand-900 font-medium" : "text-slate-600")}>
+                                  {q}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="p-6 border-t border-slate-100 flex items-center justify-between bg-white">
+                  <p className="text-sm font-semibold text-slate-500">
+                    {selectedQuestions.length} selected
+                  </p>
+                  <div className="flex gap-3">
+                    <Button variant="ghost" onClick={() => setIsQuestionsModalOpen(false)}>Cancel</Button>
+                    <Button variant="primary" disabled={selectedQuestions.length === 0} onClick={handleAskSelectedQuestions}>
+                      Ask {selectedQuestions.length} Questions
+                    </Button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
         </AnimatePresence>
       </main>
     </div>
