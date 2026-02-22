@@ -8,3 +8,10 @@ coverage/
 !.env.example
 *.db
 *.db-journal
+
+# Models and large files
+interview_model/
+*.safetensors
+*.bin
+*.pt
+*.onnx
