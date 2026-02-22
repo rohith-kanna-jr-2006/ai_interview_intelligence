@@ -215,42 +215,29 @@ export const generateInterviewQuestions = async (resumeBuffer) => {
         const data = await pdf(resumeBuffer);
         const resumeText = data.text;
 
-        // 2. Access the Gemini Model (Flash is recommended for speed/cost)
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // 2. Call the local Python Flask API
+        console.log("Calling local Python API at http://localhost:5000/generate...");
+        const response = await fetch("http://localhost:5000/generate", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ resume_text: resumeText }),
+        });
 
-        // 3. Construct the Master Prompt
-        const prompt = `
-      You are an intelligent AI Interviewer for a MERN stack application.
-      Analyze the following resume text and return a structured JSON response.
-      
-      Resume Text: ${resumeText}
+        if (!response.ok) {
+            throw new Error(`Python API error: ${response.statusText}`);
+        }
 
-      Return exactly this JSON format:
-      {
-        "candidate_name": "Name",
-        "experience_level": "Beginner/Intermediate/Advanced",
-        "questions": [
-          { "type": "Technical", "question": "...", "reason": "Based on [Skill]" },
-          { "type": "Project-based", "question": "...", "reason": "Based on [Project Name]" },
-          { "type": "HR", "question": "...", "reason": "Behavioral assessment" }
-        ]
-      }
-    `;
+        const parsedData = await response.json();
 
-        // 4. Generate Content
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-
-        // Clean and parse the JSON response
-        const jsonString = response.text().replace(/```json|```/g, "");
-        const parsedData = JSON.parse(jsonString);
         return {
             ...parsedData,
             rawText: resumeText
         };
 
     } catch (error) {
-        console.error("Error generating questions:", error);
+        console.error("Error generating questions via Python API:", error);
         throw error;
     }
 };

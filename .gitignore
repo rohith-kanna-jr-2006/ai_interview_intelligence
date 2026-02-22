@@ -8,10 +8,11 @@ coverage/
 !.env.example
 *.db
 *.db-journal
-
-# Models and large files
-interview_model/
+venv/
+interview-intelligence-model/
 *.safetensors
 *.bin
 *.pt
 *.onnx
+*.h5
+python_api_env/
